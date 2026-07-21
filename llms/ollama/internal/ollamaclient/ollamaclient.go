@@ -275,6 +275,15 @@ func (c *Client) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*E
 	return resp, nil
 }
 
+// Show returns details about a model, including its capabilities (e.g. "thinking").
+func (c *Client) Show(ctx context.Context, req *ShowRequest) (*ShowResponse, error) {
+	resp := &ShowResponse{}
+	if err := c.do(ctx, http.MethodPost, "/api/show", req, resp); err != nil {
+		return resp, err
+	}
+	return resp, nil
+}
+
 func (c *Client) Pull(ctx context.Context, req *PullRequest) error {
 	// Use streaming to handle the pull properly
 	req.Stream = true

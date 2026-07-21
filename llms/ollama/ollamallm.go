@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/ollama/internal/ollamaclient"
+
+	"slices"
 )
 
 var (
@@ -20,9 +21,10 @@ var (
 
 // LLM is a ollama LLM implementation.
 type LLM struct {
-	CallbacksHandler callbacks.Handler
-	client           *ollamaclient.Client
-	options          options
+	CallbacksHandler  callbacks.Handler
+	client            *ollamaclient.Client
+	options           options
+	supportsReasoning bool
 }
 
 var (
@@ -42,28 +44,31 @@ func New(opts ...Option) (*LLM, error) {
 		return nil, err
 	}
 
-	return &LLM{client: client, options: o}, nil
+	// Probe the model's capabilities via /api/show. We treat any error as
+	// "reasoning unsupported" so construction never fails on this optional
+	// check; users can still call the model regardless of the result.
+	supportsReasoning := false
+	if o.model != "" {
+		showResp, showErr := client.Show(context.Background(), &ollamaclient.ShowRequest{Model: o.model})
+		if showErr == nil {
+			supportsReasoning = slices.Contains(showResp.Capabilities, "thinking")
+		}
+	}
+
+	return &LLM{
+		client:            client,
+		options:           o,
+		supportsReasoning: supportsReasoning,
+	}, nil
 }
 
 // SupportsReasoning implements the ReasoningModel interface.
 // Returns true if the current model supports reasoning/thinking.
+// The capability is determined out-of-band (e.g. via the Ollama /api/show
+// endpoint) and cached on the LLM instance; SupportsReasoning does not
+// inspect the model name.
 func (o *LLM) SupportsReasoning() bool {
-	// Check if the model supports reasoning based on model name patterns
-	model := strings.ToLower(o.options.model)
-
-	// Ollama models that support reasoning/thinking:
-	// - deepseek-r1 models (DeepSeek reasoning models)
-	// - qwq models (Alibaba's QwQ reasoning models)
-	// - Models with "reasoning" or "thinking" in the name
-	if strings.Contains(model, "deepseek-r1") ||
-		strings.Contains(model, "qwq") ||
-		strings.Contains(model, "reasoning") ||
-		strings.Contains(model, "thinking") {
-		return true
-	}
-
-	// Future: could check model capabilities via Ollama API when available
-	return false
+	return o.supportsReasoning
 }
 
 // Call Implement the call interface for LLM.
@@ -146,21 +151,13 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	// Get our ollamaOptions from llms.CallOptions
 	ollamaOptions := makeOllamaOptionsFromOptions(o.options.ollamaOptions, opts)
 
-	// Handle thinking mode if specified via metadata
-	if opts.Metadata != nil {
-		if config, ok := opts.Metadata["thinking_config"].(*llms.ThinkingConfig); ok {
-			if config.Mode != llms.ThinkingModeNone && o.SupportsReasoning() {
-				// Enable thinking for models that support it
-				ollamaOptions.Think = true
-			}
-		}
-	}
 	req := &ollamaclient.ChatRequest{
 		Model:    model,
 		Format:   format,
 		Messages: chatMsgs,
 		Options:  ollamaOptions,
 		Stream:   opts.StreamingFunc != nil,
+		Think:    resolveThink(o.options.think, opts.Metadata, o.SupportsReasoning()),
 	}
 
 	keepAlive := o.options.keepAlive
@@ -231,7 +228,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 
 	// Note: Ollama may include thinking in the main content when Think mode is enabled
 	// Future versions may provide separate thinking content
-	if ollamaOptions.Think && o.SupportsReasoning() {
+	if req.Think.IsEnabled() {
 		genInfo["ThinkingEnabled"] = true
 	}
 
@@ -307,6 +304,24 @@ func typeToRole(typ llms.ChatMessageType) string {
 	return ""
 }
 
+func resolveThink(explicit *ollamaclient.ThinkValue, metadata map[string]any, supported bool) *ollamaclient.ThinkValue {
+	// When the model does not advertise reasoning support we drop the field
+	// entirely so non-reasoning models and older Ollama versions see the
+	// same payload they did before WithThink existed.
+	if !supported {
+		return nil
+	}
+	// Explicit WithThink/WithThinkLevel wins over metadata so callers can
+	// override the call-site default.
+	if explicit != nil {
+		return explicit
+	}
+	if config, ok := metadata["thinking_config"].(*llms.ThinkingConfig); ok && config.Mode != llms.ThinkingModeNone {
+		return ollamaclient.NewBoolThink(true)
+	}
+	return nil
+}
+
 func makeOllamaOptionsFromOptions(ollamaOptions ollamaclient.Options, opts llms.CallOptions) ollamaclient.Options {
 	// Load back CallOptions as ollamaOptions
 	ollamaOptions.NumPredict = opts.MaxTokens
@@ -318,16 +333,6 @@ func makeOllamaOptionsFromOptions(ollamaOptions ollamaclient.Options, opts llms.
 	ollamaOptions.RepeatPenalty = float32(opts.RepetitionPenalty)
 	ollamaOptions.FrequencyPenalty = float32(opts.FrequencyPenalty)
 	ollamaOptions.PresencePenalty = float32(opts.PresencePenalty)
-
-	// Extract thinking configuration for models that support it
-	if opts.Metadata != nil {
-		if config, ok := opts.Metadata["thinking_config"].(*llms.ThinkingConfig); ok {
-			// Enable thinking mode if not explicitly disabled
-			if config.Mode != llms.ThinkingModeNone {
-				ollamaOptions.Think = true
-			}
-		}
-	}
 
 	return ollamaOptions
 }

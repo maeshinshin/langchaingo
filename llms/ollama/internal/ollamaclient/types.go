@@ -52,8 +52,20 @@ type ChatRequest struct {
 	Stream    bool       `json:"stream,omitempty"`
 	Format    string     `json:"format"`
 	KeepAlive string     `json:"keep_alive,omitempty"`
+	// Think controls reasoning output. When non-nil, serialized as a JSON
+	// boolean (true/false) or string ("high", "medium", "low", "max")
+	// depending on what the underlying model supports (Ollama 0.9.0+).
+	Think *ThinkValue `json:"think,omitempty"`
 
 	Options Options `json:"options"`
+}
+
+type ShowRequest struct {
+	Model string `json:"model"`
+}
+
+type ShowResponse struct {
+	Capabilities []string `json:"capabilities"`
 }
 
 type Metrics struct {
@@ -167,9 +179,7 @@ type Options struct {
 	MirostatEta      float32 `json:"mirostat_eta,omitempty"`
 	TopP             float32 `json:"top_p,omitempty"`
 	PenalizeNewline  bool    `json:"penalize_newline,omitempty"`
-	Think            bool    `json:"think,omitempty"` // Ollama 0.9.0+ reasoning mode
 }
-
 type PullRequest struct {
 	Model  string `json:"model"`
 	Stream bool   `json:"stream,omitempty"`

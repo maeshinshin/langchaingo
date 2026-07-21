@@ -18,8 +18,12 @@ type options struct {
 	system              string
 	format              string
 	keepAlive           string
-	pullModel           bool
-	pullTimeout         time.Duration
+	// think is serialized as a JSON boolean ("true"/"false") or a string
+	// thinking level ("high", "medium", "low", "max") when the active model
+	// supports reasoning. It is ignored for models without the capability.
+	think       *ollamaclient.ThinkValue
+	pullModel   bool
+	pullTimeout time.Duration
 }
 
 type Option func(*options)
@@ -269,10 +273,22 @@ func WithPredictPenalizeNewline(val bool) Option {
 }
 
 // WithThink enables reasoning mode for models that support it (Ollama 0.9.0+).
-// When enabled, the model will show its internal reasoning process.
-func WithThink(val bool) Option {
+// When set to true, the model returns separate thinking output in addition
+// to content. The value is only sent to the server when the active model
+// advertises the "thinking" capability via Ollama's /api/show endpoint.
+func WithThink(enable bool) Option {
 	return func(opts *options) {
-		opts.ollamaOptions.Think = val
+		opts.think = ollamaclient.NewBoolThink(enable)
+	}
+}
+
+// WithThinkLevel sets the reasoning effort for models that support it
+// (Ollama 0.9.0+). Valid values are "high", "medium", "low" or "max" with
+// "max" requesting the highest thinking level. The value is only sent to
+// the server when the active model advertises the "thinking" capability.
+func WithThinkLevel(level string) Option {
+	return func(opts *options) {
+		opts.think = ollamaclient.NewStringThink(level)
 	}
 }
 
